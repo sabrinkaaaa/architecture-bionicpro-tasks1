@@ -11,16 +11,17 @@ services:
       - ./postgres-keycloak-data:/var/lib/postgresql/data
     ports:
       - "5433:5432"
+
   keycloak:
     image: quay.io/keycloak/keycloak:21.1
     environment:
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://keycloak_db:5432/keycloak_db
       KC_DB_USERNAME: keycloak_user
       KC_DB_PASSWORD: keycloak_password
-    command: 
+    command:
       - start-dev
       - --import-realm
     volumes:
@@ -29,6 +30,7 @@ services:
       - "8080:8080"
     depends_on:
       - keycloak_db
+
   frontend:
     build:
       context: ./frontend
@@ -40,3 +42,43 @@ services:
       REACT_APP_KEYCLOAK_URL: http://localhost:8080
       REACT_APP_KEYCLOAK_REALM: reports-realm
       REACT_APP_KEYCLOAK_CLIENT_ID: reports-frontend
+
+  bff:
+    build:
+      context: ./bff
+    ports:
+      - "8000:8000"
+    environment:
+      - KEYCLOAK_URL=http://keycloak:8080
+      - CLIENT_ID=reports-frontend
+      - REDIRECT_URI=http://localhost:3000/callback
+    depends_on:
+      - keycloak
+
+  clickhouse:
+    image: clickhouse/clickhouse-server
+    ports:
+      - "8123:8123"
+
+  airflow:
+    image: apache/airflow:2.7.0
+    environment:
+      - LOAD_EX=n
+      - EXECUTOR=SequentialExecutor
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/sql:/opt/airflow/sql
+    ports:
+      - "8081:8080"
+
+  report-service:
+    build:
+      context: ./report-service
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_DB: default
+    depends_on:
+      - clickhouse

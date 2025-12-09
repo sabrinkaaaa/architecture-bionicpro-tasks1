@@ -1,0 +1,87 @@
+@startuml BionicPRO_Architecture
+' PlantUML: контейнерная диаграмма BionicPRO (C4-подобная)
+' Сохранить как bionicpro_architecture.puml и рендерить через PlantUML
+
+skinparam dpi 150
+skinparam componentStyle rectangle
+skinparam shadowing false
+hide empty members
+
+title BionicPRO — Контейнерная диаграмма (PKCE + Reports ETL)
+
+' Actors / Clients
+actor "Пользователь\n(Web / Mobile)" as User #FFE599
+
+' Prosthesis device
+rectangle "Протез\n(миодатчики → ESP32 → Актуаторы)\n(4G модуль)" as Prosthesis #E8F8F5
+
+' Network
+node "4G / Интернет" as Internet #F2F2F2
+
+' Frontend
+component "Frontend\n(Web / Android / iOS)\n(public client, PKCE)" as Frontend #FFF2CC
+
+' Auth infra
+cloud "External IdP - RU\n(локальное хранилище учётных данных)" as IdP_RU #FFF0F0
+cloud "External IdP - EU\n(локальное хранилище учётных данных)" as IdP_EU #FFF0F0
+
+component "Identity Gateway\n(Account Sync, data residency)\n(запрашивает локальные IdP)" as IdentityGateway #EFE6FF
+component "Keycloak\n(Internal IdP, PKCE enabled)" as Keycloak #E6F0FF
+
+' BFF
+component "BFF (Auth Gateway)\nОбмен кода → токены\nХранит refresh-server-side / httpOnly cookie" as BFF #E6FFF0
+
+' API Gateway / services
+component "API Gateway / Token Introspection" as APIGW #F0F8FF
+component "Reports Service API\n(/reports)" as ReportsAPI #FFF7E6
+
+' Data and ETL
+database "CRM (Postgres)\n(данные клиентов, ownership)" as CRM #E8F8FF
+database "Telemetry DB (OLTP)\n(сырые данные телеметрии)" as TelemetryDB #F8FFF2
+component "Apache Airflow\n(ETL DAGs)" as Airflow #FFF0E6
+database "ClickHouse (OLAP)\nВитрина отчётности" as ClickHouse #F0FFF4
+
+' Service auth
+component "Service-to-Service\n(mTLS / signed JWT)" as S2S #F2F8FF
+
+' Layout hints
+User -down-> Frontend
+Frontend -right-> BFF : "Auth Code + PKCE\n(code_challenge)"
+BFF -right-> Keycloak : "Обмен code + code_verifier\n(secure channel)"
+IdentityGateway -down-> IdP_RU : "Запрос учётных данных\n(локально, data residency)"
+IdentityGateway -down-> IdP_EU : "Запрос учётных данных\n(локально, data residency)"
+BFF -down-> IdentityGateway : "При необходимости: sync / federation"
+
+Prosthesis -right-> Internet : "4G"
+Internet -right-> BFF : "Telemetry meta / control\n(через 4G)"
+Internet -right-> Frontend : "Mobile app connectivity"
+
+Keycloak -down-> APIGW : "JWKS / introspection"
+APIGW -right-> ReportsAPI : "Forward request (token validated)"
+ReportsAPI -right-> ClickHouse : "Запрос витрины (pre-aggregated)"
+ReportsAPI -left-> BFF : "Авторизация / session validation\n(only session tokens)"
+
+CRM -down-> Airflow : "Source for ETL"
+TelemetryDB -down-> Airflow : "Source for ETL (telemetry)"
+Airflow -right-> ClickHouse : "Transform & Load\n(создаёт витрину reports_user_day)"
+S2S -right-> APIGW : "service tokens / mTLS"
+
+' Security notes
+note right of BFF
+  - Refresh tokens хранятся server-side (Redis/DB)
+  - Фронтенд не хранит IdP refresh/access tokens
+  - Refresh token rotation & revocation
+end note
+
+note left of IdentityGateway
+  - Identity Gateway обеспечивает
+  - соответствие требованиям data-residency:
+  - персональные и медданные остаются локально
+end note
+
+' Ownership / access control
+ReportsAPI ..> CRM : "Проверка ownership\n(user → prosthesis)"
+ReportsAPI ..> Keycloak : "проверка ролей / RBAC\n(если нужно)"
+
+@enduml
+
